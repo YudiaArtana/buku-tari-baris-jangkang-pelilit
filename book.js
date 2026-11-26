@@ -46,8 +46,10 @@ let step = frontClosed;
 let view = { ...views.front };
 let frame = spread(step);
 let busy = false;
+let queuedTurn = 0;
 let orbit = false;
 let gesture;
+let dragFrame;
 let openScale;
 let closedScale;
 const loaded = new Set();
@@ -232,13 +234,23 @@ function paperFace(parent, start, end, reverse = false) {
   return node;
 }
 
-function placePanel(node, x, z, nextX, nextZ, span, reverse) {
+function placePanel(node, x, z, nextX, nextZ, span, reverse, updateCss = true) {
   const startX = reverse ? nextX : x;
   const startZ = reverse ? nextZ : z;
   const dx = (reverse ? x - nextX : nextX - x) / span;
   const dz = (reverse ? z - nextZ : nextZ - z) / span;
-  node.meshPlane = { x: startX, y: -paperHeight / 2, z: startZ, dx, dz };
-  place(node, startX, -paperHeight / 2, startZ,
+  const plane = node.meshPlane ??= {};
+  plane.x = startX;
+  plane.y = -paperHeight / 2;
+  plane.z = startZ;
+  plane.dx = dx;
+  plane.dz = dz;
+  if (updateCss) placePaperCss(node);
+}
+
+function placePaperCss(node) {
+  const { x, y, z, dx, dz } = node.meshPlane;
+  place(node, x, y, z,
     `rotateY(${-Math.atan2(dz, dx)}rad) scaleX(${Math.hypot(dx, dz)})`);
 }
 
@@ -312,7 +324,11 @@ const bending = element('piece', book);
 const strips = turnColumns.slice(1).map((end, i) => ({
   a: paperFace(bending, turnColumns[i], end),
   b: paperFace(bending, turnColumns[i], end, true),
+  end,
+  span: end - turnColumns[i],
+  twist: .58 - 1.48 * ((turnColumns[i] + end) / (2 * paperWidth)) ** 1.5,
 }));
+let movingPage;
 
 function spread(value) {
   return {
@@ -375,36 +391,47 @@ function render() {
     const angle = Math.PI * turn;
     const flex = Math.sin(angle) ** 2;
     const landThickness = Math.max(bindingDepth, leftThickness + sheetDepth);
-    const elevation = x => interpolate(paperElevation(x, rightThickness, 1),
-      paperElevation(x, landThickness, 1), turn);
+    const thickness = interpolate(rightThickness, landThickness, turn);
+    const elevationWeight = 1 - .8 * flex;
     let x = 0;
     let z = backHinge + boardDepth / 2 + bindingDepth + .06 * flex;
-    bending.style.setProperty('--fold-shade', 1 - flex);
+    let elevation = bindingDepth;
     bending.meshShade = 1 - flex;
-    for (const [index, strip] of strips.entries()) {
-      const start = turnColumns[index];
-      const end = turnColumns[index + 1];
-      const span = end - start;
-      const along = (start + end) / (2 * paperWidth);
-      const curl = angle + flex * (.58 - 1.48 * along ** 1.5);
+    const newArtwork = movingPage !== leaf;
+    for (const { a, b, end, span, twist } of strips) {
+      const curl = angle + flex * twist;
       const nextX = x + span * Math.cos(curl);
-      const nextZ = z + span * Math.sin(curl) + (1 - .8 * flex) * (elevation(end) - elevation(start));
-      artwork(strip.a, leaf);
-      artwork(strip.b, leaf + 1);
-      placePanel(strip.a, x, z, nextX, nextZ, span, false);
-      placePanel(strip.b, x, z, nextX, nextZ, span, true);
+      const nextElevation = paperElevation(end, thickness, 1);
+      const nextZ = z + span * Math.sin(curl) + elevationWeight * (nextElevation - elevation);
+      if (newArtwork) {
+        artwork(a, leaf);
+        artwork(b, leaf + 1);
+      }
+      placePanel(a, x, z, nextX, nextZ, span, false, false);
+      placePanel(b, x, z, nextX, nextZ, span, true, false);
       x = nextX;
       z = nextZ;
+      elevation = nextElevation;
     }
+    movingPage = leaf;
   }
 
   const center = (Math.cos(Math.PI * opening) + Math.cos(Math.PI * closing)) * width / 4;
   const closed = Math.max(1 - opening, closing);
   const fit = interpolate(openScale, closedScale, closed * closed * (3 - 2 * closed));
-  camera.style.transform = `scale(${fit}) rotateX(${view.pitch}deg) rotateY(${view.yaw}deg)`;
-  camera.meshTransform = camera.style.transform;
+  const cameraTransform = `scale(${fit}) rotateX(${view.pitch}deg) rotateY(${view.yaw}deg)`;
+  if (camera.meshTransform !== cameraTransform) {
+    camera.meshTransform = cameraTransform;
+    camera.style.transform = cameraTransform;
+  }
   place(book, -center, 0, -paperDepth * closing / 2);
-  mesh?.paint(camera);
+  if (!mesh?.paint(camera) && leaf) {
+    bending.style.setProperty('--fold-shade', bending.meshShade);
+    for (const { a, b } of strips) {
+      placePaperCss(a);
+      placePaperCss(b);
+    }
+  }
 }
 
 function resize() {
@@ -447,29 +474,29 @@ function syncControls() {
 }
 
 function animate(draw, duration, movingCover) {
-  if (reducedMotion.matches) {
-    draw(1);
-    return Promise.resolve();
-  }
+  if (reducedMotion.matches) return Promise.resolve();
   return new Promise(resolve => {
     let lastFrame;
     let elapsed = 0;
     function tick(now) {
-      elapsed += Math.min(34, now - (lastFrame ?? now));
+      elapsed += Math.min(50, now - (lastFrame ?? now));
       lastFrame = now;
-      const time = Math.min(1, elapsed / duration);
+      if (elapsed >= duration) {
+        resolve();
+        return;
+      }
+      const time = elapsed / duration;
       const eased = movingCover
         ? time ** 3 * (10 - 15 * time + 6 * time ** 2)
         : (1 - Math.cos(Math.PI * time)) / 2;
       draw(eased);
-      if (time < 1) requestAnimationFrame(tick);
-      else resolve();
+      requestAnimationFrame(tick);
     }
     requestAnimationFrame(tick);
   });
 }
 
-async function move(to, progress = 0, canceled = false) {
+async function move(to, progress = 0, canceled = false, chained = false) {
   if (busy || to < frontClosed || to > backClosed) return;
   busy = true;
   const from = step;
@@ -478,31 +505,39 @@ async function move(to, progress = 0, canceled = false) {
   const startView = { ...view };
   const movingCover = from === frontClosed || from === backClosed || to === frontClosed || to === backClosed;
   const endView = movingCover ? viewFor(to) : startView;
+  const yawDelta = ((endView.yaw - startView.yaw + 540) % 360) - 180;
   await animate(p => {
     frame = pose(from, to, interpolate(progress, destination, p));
     if (!canceled) {
       view.pitch = interpolate(startView.pitch, endView.pitch, p);
-      const yawDelta = ((endView.yaw - startView.yaw + 540) % 360) - 180;
       view.yaw = startView.yaw + yawDelta * p;
     }
     render();
-  }, (movingCover ? 960 : 690) * Math.max(.35, Math.abs(destination - progress)), movingCover);
-  if (!canceled) step = to;
+  }, (movingCover ? 960 : chained ? 420 : 550) * Math.max(.35, Math.abs(destination - progress)), movingCover);
+  if (!canceled) {
+    step = to;
+    view = { ...endView };
+  }
   frame = spread(step);
   busy = false;
   mesh?.hold(null);
   syncControls();
   render();
+  const direction = queuedTurn;
+  queuedTurn = 0;
+  if (direction) void move(step + direction, 0, false, true);
 }
 
 function turnBy(direction) {
-  if (!gesture) void move(step + direction);
+  if (gesture) return;
+  if (busy) queuedTurn = direction;
+  else void move(step + direction);
 }
 
 previous.addEventListener('click', () => turnBy(-1));
 next.addEventListener('click', () => turnBy(1));
 cover.addEventListener('click', () => {
-  if (gesture) return;
+  if (gesture || busy) return;
   const to = step === frontClosed ? 0 : step === backClosed ? leafCount : frontClosed;
   void move(to);
 });
@@ -526,8 +561,9 @@ function orbitBy(x, y) {
 
 document.addEventListener('keydown', event => {
   const key = event.key;
-  if (event.altKey || event.ctrlKey || event.metaKey || busy || gesture) return;
+  if (event.altKey || event.ctrlKey || event.metaKey || gesture) return;
   if (orbit && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(key)) {
+    if (busy) return;
     const x = key === 'ArrowLeft' ? -12 : key === 'ArrowRight' ? 12 : 0;
     const y = key === 'ArrowUp' ? -12 : key === 'ArrowDown' ? 12 : 0;
     orbitBy(x, y);
@@ -544,7 +580,7 @@ stage.addEventListener('pointerdown', event => {
   const direction = orbit ? 0 : Number(event.target.dataset.turn || 0);
   const valid = step + direction >= frontClosed && step + direction <= backClosed;
   const pages = valid && direction && mesh ? turnTextures(step, step + direction) : null;
-  gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, direction: valid ? direction : 0, progress: 0, dragged: false, pages };
+  gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, direction: valid ? direction : 0, progress: 0, displayed: 0, dragged: false, pages };
   stage.setPointerCapture(event.pointerId);
   stage.classList.add('dragging');
 });
@@ -558,8 +594,13 @@ stage.addEventListener('pointermove', event => {
     const distance = Math.max(64, Math.min(stage.clientWidth * .35, 220));
     gesture.progress = Math.max(0, Math.min(.98, -dx * gesture.direction / distance));
     if (gesture.pages && !mesh.ready(gesture.pages)) return;
-    frame = pose(step, step + gesture.direction, gesture.progress);
-    render();
+    if (dragFrame !== undefined) return;
+    dragFrame = requestAnimationFrame(() => {
+      dragFrame = undefined;
+      gesture.displayed = gesture.progress;
+      frame = pose(step, step + gesture.direction, gesture.displayed);
+      render();
+    });
   } else {
     orbitBy(dx * .52, dy * .52);
     gesture.x = event.clientX;
@@ -569,17 +610,22 @@ stage.addEventListener('pointermove', event => {
 
 function finishGesture(event) {
   if (gesture?.id !== event.pointerId) return;
-  const { direction, progress, dragged, pages } = gesture;
+  const { direction, progress, displayed, dragged } = gesture;
+  if (dragFrame !== undefined) {
+    cancelAnimationFrame(dragFrame);
+    dragFrame = undefined;
+  }
   gesture = undefined;
   stage.classList.remove('dragging');
   if (direction && (dragged || event.type === 'pointerup')) {
     const canceled = event.type !== 'pointerup' || (dragged && progress < .22);
-    void move(step + direction, pages && !mesh.ready(pages) ? 0 : progress, canceled);
+    void move(step + direction, displayed, canceled);
   }
 }
 stage.addEventListener('pointerup', finishGesture);
 stage.addEventListener('pointercancel', finishGesture);
 stage.addEventListener('lostpointercapture', finishGesture);
+stage.addEventListener('webglcontextlost', () => requestAnimationFrame(render), true);
 
 new ResizeObserver(resize).observe(stage);
 syncControls();

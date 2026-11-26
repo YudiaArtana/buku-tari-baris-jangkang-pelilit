@@ -272,7 +272,7 @@ function createBookMesh(stage) {
       show(false);
       return;
     }
-    const resolution = Math.min(devicePixelRatio, 1.5, Math.sqrt(1800000 / (stageWidth * stageHeight)));
+    const resolution = Math.min(devicePixelRatio, 1.25, Math.sqrt(1250000 / (stageWidth * stageHeight)));
     const width = Math.round(stageWidth * resolution);
     const height = Math.round(stageHeight * resolution);
     if (canvas.width !== width || canvas.height !== height) {
@@ -288,6 +288,7 @@ function createBookMesh(stage) {
       gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 8);
     }
     show(true);
+    return true;
   }
   return {
     paint,
