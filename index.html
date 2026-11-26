@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Mockup buku hardcover interaktif Sejarah Tari Baris Jangkang.">
+  <title>Sejarah Tari Baris Jangkang · Buku 3D</title>
+  <link rel="preload" href="assets/page-01.jpg" as="image" fetchpriority="high">
+  <link rel="stylesheet" href="book.css">
+  <script src="book-mesh.js" defer></script>
+  <script src="book.js" defer></script>
+</head>
+<body>
+  <main aria-label="Sejarah Tari Baris Jangkang, buku 3D">
+    <div class="stage" id="stage">
+      <div class="shadow" aria-hidden="true"></div>
+      <div class="perspective" aria-hidden="true">
+        <div class="camera" id="camera">
+          <div class="book" id="book"></div>
+        </div>
+      </div>
+      <p class="sr-only" id="notice" role="alert"></p>
+    </div>
+
+    <div class="toolbar">
+      <div class="reading-controls" role="group" aria-label="Navigasi halaman">
+        <button id="previous" type="button" aria-label="Halaman sebelumnya" disabled>‹</button>
+        <button id="next" type="button" aria-label="Buka buku">›</button>
+      </div>
+      <div class="view-controls" role="group" aria-label="Sudut pandang dan sampul">
+        <button id="rotate" type="button" aria-pressed="false">Putar buku</button>
+        <button id="reset" type="button">Reset sudut</button>
+        <button class="primary" id="cover" type="button">Buka buku</button>
+      </div>
+    </div>
+    <p class="sr-only" id="position" role="status">Sampul depan</p>
+  </main>
+</body>
+</html>
