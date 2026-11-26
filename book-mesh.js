@@ -1,4 +1,4 @@
-function createBookMesh(stage) {
+function createBookMesh(stage, compact) {
   const canvas = document.createElement('canvas');
   const gl = canvas.getContext('webgl', { antialias: true, alpha: true, depth: true });
   if (!gl || typeof DOMMatrix !== 'function') return null;
@@ -106,17 +106,34 @@ function createBookMesh(stage) {
     const record = textures.get(url);
     if (!record || lost) return;
     const image = new Image();
-    image.onload = () => {
-      if (lost) return;
+    image.onload = async () => {
+      let bitmap;
+      if (compact && image.naturalHeight > 1300 && url.endsWith('.jpg') && typeof createImageBitmap === 'function') {
+        try {
+          bitmap = await createImageBitmap(image, {
+            resizeWidth: Math.round(image.naturalWidth * 1300 / image.naturalHeight),
+            resizeHeight: 1300,
+            resizeQuality: 'high',
+          });
+        } catch {
+          // Some devices expose createImageBitmap without supporting resizing.
+        }
+      }
+      if (lost) {
+        bitmap?.close();
+        return;
+      }
       const texture = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, texture);
       try {
-        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, bitmap ?? image);
       } catch {
         gl.deleteTexture(texture);
         record.settle();
         refresh();
         return;
+      } finally {
+        bitmap?.close();
       }
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -126,7 +143,7 @@ function createBookMesh(stage) {
       record.settle();
       const pages = [...textures.entries()].filter(([name, entry]) =>
         entry.texture && !['assets/spine.webp', 'assets/page-01.jpg', 'assets/page-68.jpg'].includes(name));
-      if (pages.length > 12) {
+      if (pages.length > (compact ? 8 : 12)) {
         const [name, old] = pages.sort((a, b) => a[1].used - b[1].used)[0];
         gl.deleteTexture(old.texture);
         textures.delete(name);
@@ -272,7 +289,8 @@ function createBookMesh(stage) {
       show(false);
       return;
     }
-    const resolution = Math.min(devicePixelRatio, 1.25, Math.sqrt(1250000 / (stageWidth * stageHeight)));
+    const pixelBudget = compact ? 650000 : 1250000;
+    const resolution = Math.min(devicePixelRatio, compact ? 1 : 1.25, Math.sqrt(pixelBudget / (stageWidth * stageHeight)));
     const width = Math.round(stageWidth * resolution);
     const height = Math.round(stageHeight * resolution);
     if (canvas.width !== width || canvas.height !== height) {
@@ -293,6 +311,7 @@ function createBookMesh(stage) {
   return {
     paint,
     preload,
+    available() { return !lost; },
     ready(urls) { return lost || ready(urls); },
     prepare,
     hold(mode) { animationMode = mode; },

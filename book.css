@@ -68,7 +68,7 @@ main {
   background-repeat: no-repeat;
 }
 .face.turn { pointer-events: auto; cursor: pointer; }
-.stage.orbit .face.turn { pointer-events: none; }
+.stage.orbit .face.turn, .stage.zoomed .face.turn { pointer-events: none; }
 .board { background-color: #38202f; }
 .illustrated { background-image: var(--art); }
 .lining { background-image: linear-gradient(90deg, #36202e, #59404d 7%, #4d3343 22%, #4d3343 97%, #3c2535); }

@@ -6,9 +6,12 @@ const next = document.querySelector('#next');
 const cover = document.querySelector('#cover');
 const rotate = document.querySelector('#rotate');
 const reset = document.querySelector('#reset');
+const zoomIn = document.querySelector('#zoom-in');
+const zoomOut = document.querySelector('#zoom-out');
 const position = document.querySelector('#position');
 const notice = document.querySelector('#notice');
-const mesh = typeof createBookMesh === 'function' ? createBookMesh(stage) : null;
+const compact = matchMedia('(pointer: coarse), (max-width: 640px)').matches;
+const mesh = typeof createBookMesh === 'function' ? createBookMesh(stage, compact) : null;
 
 const pageCount = 68;
 const leafCount = (pageCount - 2) / 2;
@@ -29,8 +32,8 @@ const frontHinge = (depth - boardDepth) / 2;
 const backHinge = -frontHinge;
 const bindingDepth = .8 * sheetDepth;
 const foldWidth = 42 * unitsPerMm;
-const foldSegments = mesh ? 40 : 20;
-const freeSegments = mesh ? 36 : 20;
+const foldSegments = compact ? 22 : mesh ? 40 : 20;
+const freeSegments = compact ? 20 : mesh ? 36 : 20;
 const foldColumns = Array.from({ length: foldSegments + 1 }, (_, i) => i * foldWidth / foldSegments);
 const stackColumns = [...foldColumns, paperWidth];
 const turnColumns = [...foldColumns, ...Array.from({ length: freeSegments }, (_, i) =>
@@ -50,6 +53,14 @@ let queuedTurn = 0;
 let orbit = false;
 let gesture;
 let dragFrame;
+let viewFrame;
+let zoom = 1;
+let panX = 0;
+let panY = 0;
+let stageWidth = 0;
+let stageHeight = 0;
+let pinch;
+const touches = new Map();
 let openScale;
 let closedScale;
 const loaded = new Set();
@@ -127,7 +138,10 @@ function pageUrl(number) {
 function preload(number) {
   if (!number || loaded.has(number)) return;
   loaded.add(number);
-  mesh?.preload(pageUrl(number));
+  if (mesh?.available()) {
+    mesh.preload(pageUrl(number));
+    return;
+  }
   const image = new Image();
   image.onerror = () => {
     loaded.delete(number);
@@ -419,7 +433,7 @@ function render() {
   const center = (Math.cos(Math.PI * opening) + Math.cos(Math.PI * closing)) * width / 4;
   const closed = Math.max(1 - opening, closing);
   const fit = interpolate(openScale, closedScale, closed * closed * (3 - 2 * closed));
-  const cameraTransform = `scale(${fit}) rotateX(${view.pitch}deg) rotateY(${view.yaw}deg)`;
+  const cameraTransform = `translate3d(${panX}px, ${panY}px, 0) scale(${fit * zoom}) rotateX(${view.pitch}deg) rotateY(${view.yaw}deg)`;
   if (camera.meshTransform !== cameraTransform) {
     camera.meshTransform = cameraTransform;
     camera.style.transform = cameraTransform;
@@ -435,13 +449,39 @@ function render() {
 }
 
 function resize() {
-  const availableWidth = stage.clientWidth;
-  const availableHeight = stage.clientHeight;
-  const verticalFit = Math.max(0, availableHeight - 44) / height;
-  openScale = Math.min(verticalFit, Math.max(0, availableWidth - 24) / (2 * width + 16), 1.34);
-  closedScale = Math.min(verticalFit, Math.max(0, availableWidth - 42) / width, 1.34);
-  mesh?.resize(availableWidth, availableHeight);
+  stageWidth = stage.clientWidth;
+  stageHeight = stage.clientHeight;
+  const verticalFit = Math.max(0, stageHeight - 44) / height;
+  openScale = Math.min(verticalFit, Math.max(0, stageWidth - 24) / (2 * width + 16), 1.34);
+  closedScale = Math.min(verticalFit, Math.max(0, stageWidth - 42) / width, 1.34);
+  mesh?.resize(stageWidth, stageHeight);
+  setZoom(zoom, panX, panY);
   render();
+}
+
+function setZoom(value, x, y) {
+  zoom = Math.min(3, Math.max(1, value));
+  const maxX = stageWidth * (zoom - 1) / 2;
+  const maxY = stageHeight * (zoom - 1) / 2;
+  panX = Math.max(-maxX, Math.min(maxX, x));
+  panY = Math.max(-maxY, Math.min(maxY, y));
+  stage.classList.toggle('zoomed', zoom > 1);
+  zoomIn.disabled = zoom >= 3;
+  zoomOut.disabled = zoom <= 1;
+}
+
+function scheduleView() {
+  if (viewFrame !== undefined) return;
+  viewFrame = requestAnimationFrame(() => {
+    viewFrame = undefined;
+    render();
+  });
+}
+
+function zoomBy(factor) {
+  const target = Math.min(3, Math.max(1, zoom * factor));
+  setZoom(target, panX * target / zoom, panY * target / zoom);
+  scheduleView();
 }
 
 function viewFor(value) {
@@ -529,7 +569,7 @@ async function move(to, progress = 0, canceled = false, chained = false) {
 }
 
 function turnBy(direction) {
-  if (gesture) return;
+  if (gesture || touches.size > 1) return;
   if (busy) queuedTurn = direction;
   else void move(step + direction);
 }
@@ -537,7 +577,7 @@ function turnBy(direction) {
 previous.addEventListener('click', () => turnBy(-1));
 next.addEventListener('click', () => turnBy(1));
 cover.addEventListener('click', () => {
-  if (gesture || busy) return;
+  if (gesture || busy || touches.size > 1) return;
   const to = step === frontClosed ? 0 : step === backClosed ? leafCount : frontClosed;
   void move(to);
 });
@@ -548,15 +588,18 @@ rotate.addEventListener('click', () => {
   syncControls();
 });
 reset.addEventListener('click', () => {
-  if (busy || gesture) return;
+  if (busy || gesture || touches.size) return;
   view = { ...viewFor(step) };
+  setZoom(1, 0, 0);
   render();
 });
+zoomIn.addEventListener('click', () => zoomBy(1.4));
+zoomOut.addEventListener('click', () => zoomBy(1 / 1.4));
 
 function orbitBy(x, y) {
   view.pitch = (view.pitch - y + 540) % 360 - 180;
   view.yaw = (view.yaw + x + 540) % 360 - 180;
-  render();
+  scheduleView();
 }
 
 document.addEventListener('keydown', event => {
@@ -576,15 +619,52 @@ document.addEventListener('keydown', event => {
 });
 
 stage.addEventListener('pointerdown', event => {
-  if (!event.isPrimary || event.button !== 0 || gesture || busy) return;
-  const direction = orbit ? 0 : Number(event.target.dataset.turn || 0);
+  if (busy || event.button !== 0) return;
+  if (event.pointerType === 'touch') {
+    if (touches.size === 2) return;
+    touches.set(event.pointerId, [event.clientX, event.clientY]);
+    stage.setPointerCapture(event.pointerId);
+    if (touches.size === 2) {
+      if (dragFrame !== undefined) cancelAnimationFrame(dragFrame);
+      dragFrame = undefined;
+      gesture = undefined;
+      frame = spread(step);
+      const { x, y, distance } = touchGeometry();
+      const bounds = stage.getBoundingClientRect();
+      pinch = { x, y, distance: Math.max(1, distance), zoom, panX, panY,
+        centerX: bounds.left + stageWidth / 2, centerY: bounds.top + stageHeight / 2 };
+      scheduleView();
+      return;
+    }
+  }
+  if (!event.isPrimary || gesture) return;
+  const panning = !orbit && zoom > 1;
+  const direction = orbit || panning ? 0 : Number(event.target.dataset.turn || 0);
   const valid = step + direction >= frontClosed && step + direction <= backClosed;
   const pages = valid && direction && mesh ? turnTextures(step, step + direction) : null;
-  gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, direction: valid ? direction : 0, progress: 0, displayed: 0, dragged: false, pages };
+  gesture = { id: event.pointerId, x: event.clientX, y: event.clientY, direction: valid ? direction : 0, panning, progress: 0, displayed: 0, dragged: false, pages };
   stage.setPointerCapture(event.pointerId);
   stage.classList.add('dragging');
 });
+
+function touchGeometry() {
+  const [[ax, ay], [bx, by]] = touches.values();
+  return { x: (ax + bx) / 2, y: (ay + by) / 2, distance: Math.hypot(ax - bx, ay - by) };
+}
+
 stage.addEventListener('pointermove', event => {
+  if (touches.has(event.pointerId)) {
+    touches.set(event.pointerId, [event.clientX, event.clientY]);
+    if (pinch) {
+      const { x, y, distance } = touchGeometry();
+      const target = Math.min(3, Math.max(1, pinch.zoom * distance / pinch.distance));
+      const ratio = target / pinch.zoom;
+      setZoom(target, x - pinch.centerX - (pinch.x - pinch.centerX - pinch.panX) * ratio,
+        y - pinch.centerY - (pinch.y - pinch.centerY - pinch.panY) * ratio);
+      scheduleView();
+      return;
+    }
+  }
   if (gesture?.id !== event.pointerId) return;
   const dx = event.clientX - gesture.x;
   const dy = event.clientY - gesture.y;
@@ -602,13 +682,23 @@ stage.addEventListener('pointermove', event => {
       render();
     });
   } else {
-    orbitBy(dx * .52, dy * .52);
+    if (gesture.panning) {
+      setZoom(zoom, panX + dx, panY + dy);
+      scheduleView();
+    } else {
+      orbitBy(dx * .52, dy * .52);
+    }
     gesture.x = event.clientX;
     gesture.y = event.clientY;
   }
 });
 
 function finishGesture(event) {
+  if (touches.delete(event.pointerId) && pinch) {
+    pinch = undefined;
+    stage.classList.remove('dragging');
+    return;
+  }
   if (gesture?.id !== event.pointerId) return;
   const { direction, progress, displayed, dragged } = gesture;
   if (dragFrame !== undefined) {
